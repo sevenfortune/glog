@@ -28,10 +28,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"runtime"
 )
 
 // MaxSize is the maximum size of a log file in bytes.
-var MaxSize uint64 = 1024 * 1024 * 1800
+var MaxSize uint64 = 1024 * 1024 * 50
 
 // logDirs lists the candidate directories for new log files.
 var logDirs []string
@@ -39,6 +40,14 @@ var logDirs []string
 // If non-empty, overrides the choice of directory in which to write logs.
 // See createLogDirs for the full list of possible destinations.
 var logDir = flag.String("log_dir", "", "If non-empty, write log files in this directory")
+
+func SetLogDir(path *string) {
+	logDir = path
+}
+
+func SetFileMaxSize(maxsize uint64) {
+	MaxSize = maxsize
+}
 
 func createLogDirs() {
 	if *logDir != "" {
@@ -96,6 +105,31 @@ func logName(tag string, t time.Time) (name, link string) {
 	return name, program + "." + tag
 }
 
+func logNameV2(tag string, t time.Time) (name, link string) {
+	for i := 0; i < 1000; i++ {
+		name = fmt.Sprintf("%04d-%02d-%02d-%03d.log",t.Year(), t.Month(), t.Day(), i)
+		fname := filepath.Join(*logDir, name)
+		if !checkFileIsExist(fname) {
+			break
+		}
+	}
+
+	return name, program + "." + "log"
+}
+
+func checkFileIsExist(filename string) bool {
+	var exist = true
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		exist = false
+	}
+	return exist
+}
+
+func stack() string {
+    var buf [2 << 10]byte
+    return string(buf[:runtime.Stack(buf[:], true)])
+}
+
 var onceLogDirs sync.Once
 
 // create creates a new log file and returns the file and its filename, which
@@ -107,7 +141,7 @@ func create(tag string, t time.Time) (f *os.File, filename string, err error) {
 	if len(logDirs) == 0 {
 		return nil, "", errors.New("log: no log dirs")
 	}
-	name, link := logName(tag, t)
+	name, link := logNameV2(tag, t)
 	var lastErr error
 	for _, dir := range logDirs {
 		fname := filepath.Join(dir, name)

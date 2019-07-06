@@ -88,6 +88,8 @@ import (
 	"time"
 )
 
+var stackFramesDepth = 3
+
 // severity identifies the sort of log: info, warning etc. It also implements
 // the flag.Value interface. The -stderrthreshold flag is of type severity and
 // should be modified only through the flag.Value interface. The values match
@@ -101,21 +103,22 @@ var outputSeverity severity
 const (
 	debugLog severity = iota
 	infoLog
+	warningLog
 	errorLog
 	fatalLog
 	numSeverity = 5
 )
 
-const severityChar = "DIEF"
+const severityChar = "DIWEF"
 
 var severityName = []string{
 	debugLog: "DEBUG",
 	infoLog:  "INFO",
+	warningLog: "WARN",
 	errorLog: "ERROR",
 	fatalLog: "FATAL",
 }
 
-//测试tag
 // get returns the value of the severity.
 func (s *severity) get() severity {
 	return severity(atomic.LoadInt32((*int32)(s)))
@@ -171,6 +174,14 @@ func SetLevelString(outputLevel string) {
 	outputSeverity = severity
 }
 
+func SetStackFramesDepth(depth int) {
+	stackFramesDepth = depth
+}
+
+func SetDailyRolling(dailyRolling bool) {
+	logging.dailyRolling = dailyRolling
+}
+
 // OutputStats tracks the number of output lines and bytes written.
 type OutputStats struct {
 	lines int64
@@ -190,12 +201,13 @@ func (s *OutputStats) Bytes() int64 {
 // Stats tracks the number of lines of output and number of bytes
 // per severity level. Values must be read with atomic.LoadInt64.
 var Stats struct {
-	Debug, Info, Error OutputStats
+	Debug, Info, Warning, Error OutputStats
 }
 
 var severityStats = [numSeverity]*OutputStats{
 	debugLog: &Stats.Debug,
 	infoLog:  &Stats.Info,
+	warningLog:  &Stats.Warning,
 	errorLog: &Stats.Error,
 }
 
@@ -415,7 +427,8 @@ func init() {
 	flag.Var(&logging.traceLocation, "log_backtrace_at", "when logging hits line file:N, emit a stack trace")
 
 	// Default stderrThreshold is ERROR.
-	logging.stderrThreshold = errorLog
+	// logging.stderrThreshold = errorLog
+	logging.stderrThreshold = fatalLog
 
 	//Default outputSeverity is INFO.
 	outputSeverity = infoLog
@@ -549,7 +562,7 @@ where the fields are defined as follows:
 	msg              The user-supplied message
 */
 func (l *loggingT) header(s severity, depth int) (*buffer, string, int) {
-	_, file, line, ok := runtime.Caller(3 + depth)
+	_, file, line, ok := runtime.Caller(stackFramesDepth + depth)
 	if !ok {
 		file = "???"
 		line = 1
@@ -578,9 +591,14 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 	_, month, day := now.Date()
 	hour, minute, second := now.Clock()
 	// Lmmdd hh:mm:ss.uuuuuu threadid file:line]
-	buf.tmp[0] = severityChar[s]
-	buf.twoDigits(1, int(month))
+	// buf.tmp[0] = severityChar[s]
+	// buf.twoDigits(1, int(month))
+	// buf.twoDigits(3, day)
+
+	buf.twoDigits(0, int(month))
+	buf.tmp[2] = '-'
 	buf.twoDigits(3, day)
+
 	buf.tmp[5] = ' '
 	buf.twoDigits(6, hour)
 	buf.tmp[8] = ':'
@@ -593,10 +611,15 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 	buf.nDigits(7, 22, pid, ' ') // TODO: should be TID
 	buf.tmp[29] = ' '
 	buf.Write(buf.tmp[:30])
+
+	buf.WriteString(severityName[s])
+	buf.tmp[0] = ' '
+	buf.Write(buf.tmp[:1])
+
 	buf.WriteString(file)
 	buf.tmp[0] = ':'
 	n := buf.someDigits(1, line)
-	buf.tmp[n+1] = ']'
+	buf.tmp[n+1] = ':'
 	buf.tmp[n+2] = ' '
 	buf.Write(buf.tmp[:n+3])
 	return buf
@@ -647,6 +670,7 @@ func (l *loggingT) println(s severity, args ...interface{}) {
 	if s < outputSeverity {
 		return
 	}
+
 	buf, file, line := l.header(s, 0)
 	fmt.Fprintln(buf, args...)
 	l.output(s, buf, file, line, false)
@@ -713,18 +737,25 @@ func (l *loggingT) output(s severity, buf *buffer, file string, line int, alsoTo
 		if alsoToStderr || l.alsoToStderr || s >= l.stderrThreshold.get() {
 			os.Stderr.Write(data)
 		}
-		if l.file[s] == nil {
-			if err := l.createFiles(s); err != nil {
+
+		writeLevel := debugLog
+
+		if l.file[writeLevel] == nil {
+			if err := l.createFiles(writeLevel); err != nil {
 				os.Stderr.Write(data) // Make sure the message appears somewhere.
 				l.exit(err)
 			}
 		}
-		switch s {
+
+		switch writeLevel {
 		case fatalLog:
 			l.file[fatalLog].Write(data)
 			fallthrough
 		case errorLog:
 			l.file[errorLog].Write(data)
+			fallthrough
+		case warningLog:
+			l.file[warningLog].Write(data)
 			fallthrough
 		case infoLog:
 			l.file[infoLog].Write(data)
@@ -750,7 +781,8 @@ func (l *loggingT) output(s severity, buf *buffer, file string, line int, alsoTo
 		// Write the stack trace for all goroutines to the files.
 		trace := stacks(true)
 		logExitFunc = func(error) {} // If we get a write error, we'll still exit below.
-		for log := fatalLog; log >= debugLog; log-- {
+		// for log := fatalLog; log >= debugLog; log-- {
+		for log := debugLog; log >= debugLog; log-- {
 			if f := l.file[log]; f != nil { // Can be nil if -logtostderr is set.
 				f.Write(trace)
 			}
@@ -842,14 +874,14 @@ func (sb *syncBuffer) Sync() error {
 
 func (sb *syncBuffer) Write(p []byte) (n int, err error) {
 	if logging.dailyRolling {
-		if sb.createdDate != string(p[1:5]) {
+		if sb.createdDate != string(p[0:5]) {
 			if err := sb.rotateFile(time.Now()); err != nil {
 				sb.logger.exit(err)
 			}
 		}
 	}
 
-	if sb.nbytes+uint64(len(p)) >= MaxSize {
+	if sb.nbytes + uint64(len(p)) >= MaxSize {
 		if err := sb.rotateFile(time.Now()); err != nil {
 			sb.logger.exit(err)
 		}
@@ -877,16 +909,16 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 
 	sb.Writer = bufio.NewWriterSize(sb.file, bufferSize)
 	_, month, day := now.Date()
-	sb.createdDate = fmt.Sprintf("%02d%02d", month, day)
+	sb.createdDate = fmt.Sprintf("%02d-%02d", month, day)
 
 	// Write header.
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
-	fmt.Fprintf(&buf, "Running on machine: %s\n", host)
-	fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&buf, "Log line format: [DIEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg\n")
-	n, err := sb.file.Write(buf.Bytes())
-	sb.nbytes += uint64(n)
+	// var buf bytes.Buffer
+	// fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
+	// fmt.Fprintf(&buf, "Running on machine: %s\n", host)
+	// fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	// fmt.Fprintf(&buf, "Log line format: [DIEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg\n")
+	// n, err := sb.file.Write(buf.Bytes())
+	// sb.nbytes += uint64(n)
 	return err
 }
 
@@ -901,11 +933,13 @@ func (l *loggingT) createFiles(sev severity) error {
 	now := time.Now()
 	// Files are created in decreasing severity order, so as soon as we find one
 	// has already been created, we can stop.
-	for s := sev; s >= debugLog && l.file[s] == nil; s-- {
+	// for s := sev; s >= debugLog && l.file[s] == nil; s-- {
+	for s := debugLog; s >= debugLog && l.file[s] == nil; s-- {
 		sb := &syncBuffer{
 			logger: l,
 			sev:    s,
 		}
+
 		if err := sb.rotateFile(now); err != nil {
 			return err
 		}
@@ -934,7 +968,8 @@ func (l *loggingT) lockAndFlushAll() {
 // l.mu is held.
 func (l *loggingT) flushAll() {
 	// Flush from fatal down, in case there's trouble flushing.
-	for s := fatalLog; s >= debugLog; s-- {
+	// for s := fatalLog; s >= debugLog; s-- {
+	for s := debugLog; s >= debugLog; s-- {
 		file := l.file[s]
 		if file != nil {
 			file.Flush() // ignore error
@@ -1126,6 +1161,30 @@ func Infoln(args ...interface{}) {
 // Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
 func Infof(format string, args ...interface{}) {
 	logging.printf(infoLog, format, args...)
+}
+
+// Warning logs to the WARNING and INFO logs.
+// Arguments are handled in the manner of fmt.Print; a newline is appended if missing.
+func Warning(args ...interface{}) {
+	logging.print(warningLog, args...)
+}
+
+// WarningDepth acts as Warning but uses depth to determine which call frame to log.
+// WarningDepth(0, "msg") is the same as Warning("msg").
+func WarningDepth(depth int, args ...interface{}) {
+	logging.printDepth(warningLog, depth, args...)
+}
+
+// Warningln logs to the WARNING and INFO logs.
+// Arguments are handled in the manner of fmt.Println; a newline is appended if missing.
+func Warningln(args ...interface{}) {
+	logging.println(warningLog, args...)
+}
+
+// Warningf logs to the WARNING and INFO logs.
+// Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
+func Warningf(format string, args ...interface{}) {
+	logging.printf(warningLog, format, args...)
 }
 
 // Error logs to the ERROR, WARNING, and INFO logs.
