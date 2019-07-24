@@ -4,10 +4,11 @@ glog
 在[golang/glog](https://github.com/golang/glog)的基础上做了一些修改。
 
 ## 修改的地方:
-重新做了一层封装。支持按日志分割，按大小分割。
-只输出一个文件。
-文件名修改成类似：2019-07-06-001.log，支持1000个，达到最大时最后一个将重写。
-链接改为program.log，program为进程名字。
+1. 重新做了一层封装。支持按日志分割，按大小分割。
+2. 只输出一个文件。
+3. 文件名修改成类似：2019-07-06-001.log，支持1000个，达到最大时最后一个将重写。
+4. 链接改为program.log，program为进程名字。
+5. 日志等级扩展为5级：LOGGER_LEVEL_DEBUG，LOGGER_LEVEL_INFO，LOGGER_LEVEL_WARN，LOGGER_LEVEL_ERROR，LOGGER_LEVEL_FATAL
 
 ##使用示例 
 ```
