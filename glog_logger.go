@@ -28,6 +28,8 @@ type loggerInterface interface {
     Init(loggerLevel int, logPath string, dailyRolling bool, fileMaxSize uint64)
     Release()
 
+    SetLevel(level int)
+
     Fatal(args ...interface{})
     Fatalf(format string, args ...interface{})
     Fatalln(args ...interface{})
