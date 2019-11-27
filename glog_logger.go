@@ -77,6 +77,14 @@ func (logger *glogLogger) Release() {
     Flush()
 }
 
+func (logger *glogLogger) SetLevel(level int)  {
+    if level >= 0 && level < len(loggerLevelNames) {
+        SetLevelString(loggerLevelNames[level])
+    } else {
+        SetLevelString(loggerLevelNames[len(loggerLevelNames) - 1])
+    }
+}
+
 func (logger *glogLogger) Fatal(args ...interface{}) {
     Fatal(args...)
 }
